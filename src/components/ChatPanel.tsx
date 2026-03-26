@@ -18,45 +18,68 @@ export default function ChatPanel() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const send = useCallback(async (text: string) => {
-    if (!text.trim() || isLoading) return;
+  const send = useCallback(
+    async (text: string) => {
+      if (!text.trim() || isLoading) return;
 
-    const userMsg = { id: generateId(), role: "user" as const, content: text.trim(), canvasDiff: null };
-    addMessage(userMsg);
-    setInput("");
-    setLoading(true);
-
-    try {
-      const context = buildContext({ charts, annotations });
-      context.push({ role: "user", content: text.trim() });
-
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: context }),
-      });
-
-      if (!res.ok) throw new Error(`API error: ${res.status}`);
-
-      const data: AIResponse = await res.json();
-      applyAIResponse(data.charts, data.annotations);
-      addMessage({
+      const userMsg = {
         id: generateId(),
-        role: "assistant",
-        content: data.summary,
-        canvasDiff: data,
-      });
-    } catch (err) {
-      addMessage({
-        id: generateId(),
-        role: "assistant",
-        content: `出错了：${err instanceof Error ? err.message : "未知错误"}`,
+        role: "user" as const,
+        content: text.trim(),
         canvasDiff: null,
-      });
-    } finally {
-      setLoading(false);
-    }
-  }, [isLoading, addMessage, setLoading, buildContext, charts, annotations, applyAIResponse]);
+      };
+      addMessage(userMsg);
+      setInput("");
+      setLoading(true);
+
+      try {
+        const context = buildContext({ charts, annotations });
+        context.push({ role: "user", content: text.trim() });
+
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ messages: context }),
+        });
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          const errMsg = data.error ?? `服务异常 (${res.status})`;
+          addMessage({
+            id: generateId(),
+            role: "assistant",
+            content: `⚠️ ${errMsg}`,
+            canvasDiff: null,
+          });
+          return;
+        }
+
+        const aiData = data as AIResponse;
+        applyAIResponse(aiData.charts, aiData.annotations);
+        addMessage({
+          id: generateId(),
+          role: "assistant",
+          content: aiData.summary,
+          canvasDiff: aiData,
+        });
+      } catch (err) {
+        const isNetwork =
+          err instanceof TypeError && err.message.includes("fetch");
+        addMessage({
+          id: generateId(),
+          role: "assistant",
+          content: isNetwork
+            ? "⚠️ 网络连接失败，请检查网络后重试"
+            : `⚠️ 请求失败：${err instanceof Error ? err.message : "未知错误"}`,
+          canvasDiff: null,
+        });
+      } finally {
+        setLoading(false);
+      }
+    },
+    [isLoading, addMessage, setLoading, buildContext, charts, annotations, applyAIResponse]
+  );
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -80,7 +103,9 @@ export default function ChatPanel() {
             <div>
               <p className="mb-2 text-2xl">🎨</p>
               <p>输入描述，AI 帮你生成图表</p>
-              <p className="mt-1 text-xs">例如：&quot;画一个2024年Q1-Q4的销售趋势折线图&quot;</p>
+              <p className="mt-1 text-xs">
+                例如：&quot;画一个2024年Q1-Q4的销售趋势折线图&quot;
+              </p>
             </div>
           </div>
         )}
@@ -89,8 +114,9 @@ export default function ChatPanel() {
         ))}
         {isLoading && (
           <div className="flex justify-start mb-3">
-            <div className="rounded-2xl bg-gray-100 px-4 py-2.5 text-sm text-gray-500 dark:bg-gray-800">
-              思考中...
+            <div className="flex items-center gap-2 rounded-2xl bg-gray-100 px-4 py-2.5 text-sm text-gray-500 dark:bg-gray-800">
+              <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-blue-500" />
+              AI 正在生成图表...
             </div>
           </div>
         )}

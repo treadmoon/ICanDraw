@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useEffect, useCallback } from "react";
+import { useRef, useEffect, useCallback, useState } from "react";
 import dynamic from "next/dynamic";
 import { useCanvasStore } from "@/stores/canvas-store";
 import ChartOverlay from "./ChartOverlay";
@@ -9,10 +9,22 @@ import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
 
 const Excalidraw = dynamic(
   () => import("@excalidraw/excalidraw").then((mod) => mod.Excalidraw),
-  { ssr: false }
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-full items-center justify-center text-sm text-gray-400">
+        <div className="text-center">
+          <div className="mb-2 h-8 w-8 mx-auto animate-spin rounded-full border-2 border-gray-300 border-t-blue-500" />
+          画布加载中...
+        </div>
+      </div>
+    ),
+  }
 );
 
-function toExcalidrawElements(elements: ExcalidrawElementData[]): Record<string, unknown>[] {
+function toExcalidrawElements(
+  elements: ExcalidrawElementData[]
+): Record<string, unknown>[] {
   return elements.map((el, i) => {
     const base: Record<string, unknown> = {
       id: `exc-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 6)}`,
@@ -55,7 +67,10 @@ function toExcalidrawElements(elements: ExcalidrawElementData[]): Record<string,
     }
 
     if (el.type === "arrow") {
-      base.points = el.points ?? [[0, 0], [el.width ?? 100, el.height ?? 0]];
+      base.points = el.points ?? [
+        [0, 0],
+        [el.width ?? 100, el.height ?? 0],
+      ];
       base.startArrowhead = null;
       base.endArrowhead = "arrow";
       base.startBinding = null;
@@ -71,24 +86,48 @@ export default function Canvas() {
   const { charts, annotations } = useCanvasStore();
   const apiRef = useRef<ExcalidrawImperativeAPI | null>(null);
   const prevAnnotationsRef = useRef<string>("");
+  const [error, setError] = useState<string | null>(null);
 
   const onExcalidrawAPI = useCallback((api: ExcalidrawImperativeAPI) => {
     apiRef.current = api;
   }, []);
 
-  // Sync annotations to Excalidraw scene
   useEffect(() => {
     const key = JSON.stringify(annotations);
     if (key === prevAnnotationsRef.current || !apiRef.current) return;
     prevAnnotationsRef.current = key;
 
-    const elements = annotations.flatMap((a) => toExcalidrawElements(a.elements));
+    const elements = annotations.flatMap((a) =>
+      toExcalidrawElements(a.elements)
+    );
     if (elements.length > 0) {
-      const existing = apiRef.current.getSceneElements();
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      apiRef.current.updateScene({ elements: [...existing, ...elements] as any });
+      try {
+        const existing = apiRef.current.getSceneElements();
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        apiRef.current.updateScene({ elements: [...existing, ...elements] as any });
+      } catch (err) {
+        console.error("Failed to update Excalidraw scene:", err);
+        setError("批注渲染失败，请刷新页面重试");
+      }
     }
   }, [annotations]);
+
+  if (error) {
+    return (
+      <div className="flex h-full items-center justify-center text-sm text-red-500">
+        <div className="text-center">
+          <p className="mb-2 text-2xl">⚠️</p>
+          <p>{error}</p>
+          <button
+            onClick={() => { setError(null); window.location.reload(); }}
+            className="mt-3 rounded-lg bg-blue-600 px-4 py-1.5 text-white text-xs hover:bg-blue-700"
+          >
+            刷新页面
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="relative h-full w-full">
