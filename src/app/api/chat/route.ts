@@ -14,6 +14,8 @@ function getArkClient() {
   });
 }
 
+const MAX_MESSAGES = 50;
+
 export async function POST(req: Request) {
   const ark = getArkClient();
   if (!ark) {
@@ -32,14 +34,23 @@ export async function POST(req: Request) {
       return Response.json({ error: "消息不能为空" }, { status: 400 });
     }
 
+    if (messages.length > MAX_MESSAGES) {
+      return Response.json({ error: "消息过多，请开始新对话" }, { status: 400 });
+    }
+
+    // Filter out client-injected system messages
+    const safeMessages = messages
+      .filter((m) => m.role !== "system")
+      .map((m) => ({
+        role: m.role as "user" | "assistant",
+        content: m.content,
+      }));
+
     const result = await generateObject({
       model: ark(process.env.ARK_MODEL_ID ?? "doubao-1-5-pro-256k-250115"),
       schema: aiResponseSchema,
       system: SYSTEM_PROMPT,
-      messages: messages.map((m) => ({
-        role: m.role as "user" | "assistant" | "system",
-        content: m.content,
-      })),
+      messages: safeMessages,
     });
 
     return Response.json(result.object);

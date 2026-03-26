@@ -1,11 +1,10 @@
 "use client";
 
 export default function GlobalError({
-  error,
-  reset,
+  unstable_retry,
 }: {
   error: Error & { digest?: string };
-  reset: () => void;
+  unstable_retry: () => void;
 }) {
   return (
     <html>
@@ -14,9 +13,9 @@ export default function GlobalError({
           <div style={{ textAlign: "center" }}>
             <p style={{ fontSize: 48, marginBottom: 16 }}>😵</p>
             <h2 style={{ fontSize: 18, marginBottom: 8 }}>应用出了点问题</h2>
-            <p style={{ fontSize: 14, color: "#666", marginBottom: 16 }}>{error.message}</p>
+            <p style={{ fontSize: 14, color: "#666", marginBottom: 16 }}>请尝试刷新页面</p>
             <button
-              onClick={reset}
+              onClick={() => unstable_retry()}
               style={{ padding: "8px 24px", borderRadius: 8, background: "#2563eb", color: "#fff", border: "none", cursor: "pointer", fontSize: 14 }}
             >
               重试

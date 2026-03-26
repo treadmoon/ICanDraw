@@ -22,12 +22,16 @@ const Excalidraw = dynamic(
   }
 );
 
+// Track AI-generated element IDs to replace (not accumulate) on update
+const AI_ELEMENT_PREFIX = "ai-ann-";
+
 function toExcalidrawElements(
-  elements: ExcalidrawElementData[]
+  elements: ExcalidrawElementData[],
+  annotationId: string
 ): Record<string, unknown>[] {
   return elements.map((el, i) => {
     const base: Record<string, unknown> = {
-      id: `exc-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 6)}`,
+      id: `${AI_ELEMENT_PREFIX}${annotationId}-${i}`,
       type: el.type,
       x: el.x,
       y: el.y,
@@ -92,25 +96,29 @@ export default function Canvas() {
     apiRef.current = api;
   }, []);
 
+  // Sync AI annotations: replace old AI elements, preserve user-drawn elements
   useEffect(() => {
     const key = JSON.stringify(annotations);
     if (key === prevAnnotationsRef.current || !apiRef.current) return;
     prevAnnotationsRef.current = key;
 
-    const elements = annotations.flatMap((a) =>
-      toExcalidrawElements(a.elements)
-    );
-    if (elements.length > 0) {
-      try {
-        const existing = apiRef.current.getSceneElements();
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        apiRef.current.updateScene({
-          elements: [...existing, ...elements] as any,
-        });
-      } catch (err) {
-        console.error("Failed to update Excalidraw scene:", err);
-        setError("批注渲染失败，请刷新页面重试");
-      }
+    try {
+      const existing = apiRef.current.getSceneElements();
+      // Keep only user-drawn elements (not AI-generated)
+      const userElements = existing.filter(
+        (el) => !el.id.startsWith(AI_ELEMENT_PREFIX)
+      );
+      // Build new AI elements
+      const aiElements = annotations.flatMap((a) =>
+        toExcalidrawElements(a.elements, a.id)
+      );
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      apiRef.current.updateScene({
+        elements: [...userElements, ...aiElements] as any,
+      });
+    } catch (err) {
+      console.error("Failed to update Excalidraw scene:", err);
+      setError("批注渲染失败，请刷新页面重试");
     }
   }, [annotations]);
 
@@ -136,14 +144,9 @@ export default function Canvas() {
 
   return (
     <div className="relative h-full w-full">
-      {/* Excalidraw 主画布 — 完全可交互，支持手绘、流程图等 */}
       <div className="absolute inset-0 z-0">
-        <Excalidraw
-          excalidrawAPI={onExcalidrawAPI}
-        />
+        <Excalidraw excalidrawAPI={onExcalidrawAPI} />
       </div>
-
-      {/* ECharts 图表浮层 — hover 时激活交互，否则穿透给 Excalidraw */}
       {charts.map((chart) => (
         <ChartOverlay key={chart.id} chart={chart} />
       ))}

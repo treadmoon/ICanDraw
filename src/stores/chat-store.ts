@@ -27,14 +27,14 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       context.push({ role: m.role, content: m.content });
     }
 
-    // Append current canvas state summary as system context
+    // Append canvas state as a user-role context message (not system)
     if (canvasState.charts.length > 0) {
       const chartSummary = canvasState.charts
-        .map((c) => `Chart "${c.id}": type=${(c.option as Record<string, unknown>).series ? "has series" : "unknown"}, position=(${c.x},${c.y})`)
+        .map((c) => `Chart "${c.id}": position=(${c.x},${c.y}), size=${c.width}x${c.height}`)
         .join("; ");
       context.push({
-        role: "system",
-        content: `Current canvas state: ${chartSummary}. ${canvasState.annotations.length} annotations present.`,
+        role: "user",
+        content: `[画布上下文] 当前画布有 ${canvasState.charts.length} 个图表：${chartSummary}。${canvasState.annotations.length} 个批注。请基于此上下文处理我的下一条指令。`,
       });
     }
 

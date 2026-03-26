@@ -4,6 +4,8 @@ import { useCallback } from "react";
 import Papa from "papaparse";
 import type { CsvSchema, CsvColumn } from "@/types";
 
+const MAX_CSV_SIZE = 10 * 1024 * 1024; // 10MB
+
 function analyzeCsv(results: Papa.ParseResult<Record<string, string>>): CsvSchema {
   const data = results.data;
   const fields = results.meta.fields ?? [];
@@ -11,12 +13,18 @@ function analyzeCsv(results: Papa.ParseResult<Record<string, string>>): CsvSchem
     const values = data.map((row) => row[name]).filter(Boolean);
     const nums = values.map(Number).filter((n) => !isNaN(n));
     if (nums.length > values.length * 0.5) {
+      let min = Infinity, max = -Infinity, sum = 0;
+      for (const n of nums) {
+        if (n < min) min = n;
+        if (n > max) max = n;
+        sum += n;
+      }
       return {
         name,
         type: "number" as const,
-        min: Math.min(...nums),
-        max: Math.max(...nums),
-        mean: Math.round((nums.reduce((a, b) => a + b, 0) / nums.length) * 100) / 100,
+        min,
+        max,
+        mean: Math.round((sum / nums.length) * 100) / 100,
       };
     }
     return { name, type: "string" as const };
@@ -30,6 +38,11 @@ export default function CsvUpload({ onDataReady }: { onDataReady: (text: string)
       e.preventDefault();
       const file = e.dataTransfer.files[0];
       if (!file || !file.name.endsWith(".csv")) return;
+
+      if (file.size > MAX_CSV_SIZE) {
+        onDataReady(`CSV 文件过大（${(file.size / 1024 / 1024).toFixed(1)}MB），请上传 10MB 以内的文件`);
+        return;
+      }
 
       Papa.parse<Record<string, string>>(file, {
         header: true,
@@ -57,7 +70,7 @@ export default function CsvUpload({ onDataReady }: { onDataReady: (text: string)
       onDragOver={handleDragOver}
       className="mx-3 mb-2 rounded-lg border-2 border-dashed border-gray-300 p-2 text-center text-xs text-gray-400 hover:border-blue-400 dark:border-gray-600"
     >
-      拖拽 CSV 文件到这里
+      拖拽 CSV 文件到这里（最大 10MB）
     </div>
   );
 }

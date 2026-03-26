@@ -8,28 +8,28 @@ export default function ChartOverlay({ chart }: { chart: ChartInstance }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
   const [active, setActive] = useState(false);
+  const [renderError, setRenderError] = useState(false);
 
+  // Init once, dispose on unmount only
   useEffect(() => {
     if (!containerRef.current) return;
-
-    if (!chartRef.current) {
-      chartRef.current = echarts.init(containerRef.current);
-    }
-
-    try {
-      chartRef.current.setOption(chart.option, true);
-    } catch (err) {
-      console.error("ECharts setOption failed:", err);
-      if (containerRef.current) {
-        containerRef.current.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#999;font-size:13px;">图表渲染失败</div>`;
-      }
-      chartRef.current = null;
-    }
-
+    chartRef.current = echarts.init(containerRef.current);
     return () => {
       chartRef.current?.dispose();
       chartRef.current = null;
     };
+  }, []);
+
+  // Update option separately
+  useEffect(() => {
+    if (!chartRef.current) return;
+    try {
+      chartRef.current.setOption(chart.option, true);
+      setRenderError(false);
+    } catch (err) {
+      console.error("ECharts setOption failed:", err);
+      setRenderError(true);
+    }
   }, [chart.option]);
 
   useEffect(() => {
@@ -45,26 +45,60 @@ export default function ChartOverlay({ chart }: { chart: ChartInstance }) {
         width: chart.width,
         height: chart.height,
         zIndex: 10,
+        pointerEvents: "none",
       }}
-      onMouseEnter={() => setActive(true)}
-      onMouseLeave={() => setActive(false)}
     >
-      {/* ECharts 容器：非激活时不拦截鼠标事件，让 Excalidraw 可正常交互 */}
+      {/* Hover 感应区：透明，仅用于检测鼠标进入 */}
       <div
-        ref={containerRef}
         style={{
-          width: "100%",
-          height: "100%",
-          pointerEvents: active ? "auto" : "none",
-          borderRadius: 8,
-          background: "rgba(255,255,255,0.95)",
-          boxShadow: active
-            ? "0 4px 20px rgba(0,0,0,0.12)"
-            : "0 2px 12px rgba(0,0,0,0.06)",
-          border: active ? "2px solid #3b82f6" : "1px solid rgba(0,0,0,0.06)",
-          transition: "box-shadow 0.2s, border 0.2s",
+          position: "absolute",
+          inset: -4,
+          zIndex: 1,
+          pointerEvents: "auto",
         }}
+        onMouseEnter={() => setActive(true)}
+        onMouseLeave={() => setActive(false)}
       />
+
+      {renderError ? (
+        <div
+          style={{
+            width: "100%",
+            height: "100%",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: "#999",
+            fontSize: 13,
+            background: "rgba(255,255,255,0.95)",
+            borderRadius: 8,
+            border: "1px solid rgba(0,0,0,0.06)",
+            pointerEvents: "none",
+          }}
+        >
+          图表渲染失败
+        </div>
+      ) : (
+        <div
+          ref={containerRef}
+          style={{
+            width: "100%",
+            height: "100%",
+            pointerEvents: active ? "auto" : "none",
+            borderRadius: 8,
+            background: "rgba(255,255,255,0.95)",
+            boxShadow: active
+              ? "0 4px 20px rgba(0,0,0,0.12)"
+              : "0 2px 12px rgba(0,0,0,0.06)",
+            border: active
+              ? "2px solid #3b82f6"
+              : "1px solid rgba(0,0,0,0.06)",
+            transition: "box-shadow 0.2s, border 0.2s",
+            position: "relative",
+            zIndex: 2,
+          }}
+        />
+      )}
     </div>
   );
 }

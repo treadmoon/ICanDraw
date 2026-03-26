@@ -8,11 +8,18 @@ import CsvUpload from "./CsvUpload";
 import { generateId } from "@/lib/canvas-utils";
 import type { AIResponse } from "@/types";
 
+function isValidAIResponse(data: unknown): data is AIResponse {
+  if (!data || typeof data !== "object") return false;
+  const d = data as Record<string, unknown>;
+  return Array.isArray(d.charts) && Array.isArray(d.annotations) && typeof d.summary === "string";
+}
+
 export default function ChatPanel() {
   const [input, setInput] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const { messages, isLoading, addMessage, setLoading, buildContext } = useChatStore();
-  const { charts, annotations, applyAIResponse } = useCanvasStore();
+  const abortRef = useRef<AbortController | null>(null);
+  const { messages, isLoading, addMessage, setLoading } = useChatStore();
+  const applyAIResponse = useCanvasStore((s) => s.applyAIResponse);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -21,6 +28,11 @@ export default function ChatPanel() {
   const send = useCallback(
     async (text: string) => {
       if (!text.trim() || isLoading) return;
+
+      // Abort previous in-flight request
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
 
       const userMsg = {
         id: generateId(),
@@ -33,39 +45,50 @@ export default function ChatPanel() {
       setLoading(true);
 
       try {
-        const context = buildContext({ charts, annotations });
+        // Read store state directly to avoid stale closure
+        const { charts, annotations } = useCanvasStore.getState();
+        const context = useChatStore.getState().buildContext({ charts, annotations });
         context.push({ role: "user", content: text.trim() });
 
         const res = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ messages: context }),
+          signal: controller.signal,
         });
 
         const data = await res.json();
 
         if (!res.ok) {
-          const errMsg = data.error ?? `服务异常 (${res.status})`;
           addMessage({
             id: generateId(),
             role: "assistant",
-            content: `⚠️ ${errMsg}`,
+            content: `⚠️ ${data.error ?? `服务异常 (${res.status})`}`,
             canvasDiff: null,
           });
           return;
         }
 
-        const aiData = data as AIResponse;
-        applyAIResponse(aiData.charts, aiData.annotations);
+        if (!isValidAIResponse(data)) {
+          addMessage({
+            id: generateId(),
+            role: "assistant",
+            content: "⚠️ AI 返回了无法解析的数据，请重试",
+            canvasDiff: null,
+          });
+          return;
+        }
+
+        applyAIResponse(data.charts, data.annotations);
         addMessage({
           id: generateId(),
           role: "assistant",
-          content: aiData.summary,
-          canvasDiff: aiData,
+          content: data.summary,
+          canvasDiff: data,
         });
       } catch (err) {
-        const isNetwork =
-          err instanceof TypeError && err.message.includes("fetch");
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        const isNetwork = err instanceof TypeError && err.message.includes("fetch");
         addMessage({
           id: generateId(),
           role: "assistant",
@@ -78,7 +101,7 @@ export default function ChatPanel() {
         setLoading(false);
       }
     },
-    [isLoading, addMessage, setLoading, buildContext, charts, annotations, applyAIResponse]
+    [isLoading, addMessage, setLoading, applyAIResponse]
   );
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -90,13 +113,11 @@ export default function ChatPanel() {
 
   return (
     <div className="flex h-full flex-col border-r border-gray-200 dark:border-gray-700">
-      {/* Header */}
       <div className="border-b border-gray-200 px-4 py-3 dark:border-gray-700">
         <h1 className="text-lg font-semibold">ICanDraw</h1>
         <p className="text-xs text-gray-500">AI 数据叙事画布</p>
       </div>
 
-      {/* Messages */}
       <div className="flex-1 overflow-y-auto px-4 py-4">
         {messages.length === 0 && (
           <div className="flex h-full items-center justify-center text-center text-sm text-gray-400">
@@ -123,10 +144,8 @@ export default function ChatPanel() {
         <div ref={messagesEndRef} />
       </div>
 
-      {/* CSV Upload */}
       <CsvUpload onDataReady={(text) => send(text)} />
 
-      {/* Input */}
       <div className="border-t border-gray-200 p-3 dark:border-gray-700">
         <div className="flex gap-2">
           <textarea
