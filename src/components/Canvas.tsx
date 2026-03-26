@@ -104,7 +104,9 @@ export default function Canvas() {
       try {
         const existing = apiRef.current.getSceneElements();
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        apiRef.current.updateScene({ elements: [...existing, ...elements] as any });
+        apiRef.current.updateScene({
+          elements: [...existing, ...elements] as any,
+        });
       } catch (err) {
         console.error("Failed to update Excalidraw scene:", err);
         setError("批注渲染失败，请刷新页面重试");
@@ -119,7 +121,10 @@ export default function Canvas() {
           <p className="mb-2 text-2xl">⚠️</p>
           <p>{error}</p>
           <button
-            onClick={() => { setError(null); window.location.reload(); }}
+            onClick={() => {
+              setError(null);
+              window.location.reload();
+            }}
             className="mt-3 rounded-lg bg-blue-600 px-4 py-1.5 text-white text-xs hover:bg-blue-700"
           >
             刷新页面
@@ -131,12 +136,14 @@ export default function Canvas() {
 
   return (
     <div className="relative h-full w-full">
-      <div className="absolute inset-0">
+      {/* Excalidraw 主画布 — 完全可交互，支持手绘、流程图等 */}
+      <div className="absolute inset-0 z-0">
         <Excalidraw
           excalidrawAPI={onExcalidrawAPI}
-          UIOptions={{ canvasActions: { saveAsImage: false } }}
         />
       </div>
+
+      {/* ECharts 图表浮层 — hover 时激活交互，否则穿透给 Excalidraw */}
       {charts.map((chart) => (
         <ChartOverlay key={chart.id} chart={chart} />
       ))}

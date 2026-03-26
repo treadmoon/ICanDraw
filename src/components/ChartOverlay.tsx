@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as echarts from "echarts";
 import type { ChartInstance } from "@/types";
 
 export default function ChartOverlay({ chart }: { chart: ChartInstance }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
+  const [active, setActive] = useState(false);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -19,7 +20,6 @@ export default function ChartOverlay({ chart }: { chart: ChartInstance }) {
       chartRef.current.setOption(chart.option, true);
     } catch (err) {
       console.error("ECharts setOption failed:", err);
-      // Show fallback in the container
       if (containerRef.current) {
         containerRef.current.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#999;font-size:13px;">图表渲染失败</div>`;
       }
@@ -38,7 +38,6 @@ export default function ChartOverlay({ chart }: { chart: ChartInstance }) {
 
   return (
     <div
-      ref={containerRef}
       style={{
         position: "absolute",
         left: chart.x,
@@ -46,11 +45,26 @@ export default function ChartOverlay({ chart }: { chart: ChartInstance }) {
         width: chart.width,
         height: chart.height,
         zIndex: 10,
-        pointerEvents: "auto",
-        borderRadius: 8,
-        background: "rgba(255,255,255,0.95)",
-        boxShadow: "0 2px 12px rgba(0,0,0,0.08)",
       }}
-    />
+      onMouseEnter={() => setActive(true)}
+      onMouseLeave={() => setActive(false)}
+    >
+      {/* ECharts 容器：非激活时不拦截鼠标事件，让 Excalidraw 可正常交互 */}
+      <div
+        ref={containerRef}
+        style={{
+          width: "100%",
+          height: "100%",
+          pointerEvents: active ? "auto" : "none",
+          borderRadius: 8,
+          background: "rgba(255,255,255,0.95)",
+          boxShadow: active
+            ? "0 4px 20px rgba(0,0,0,0.12)"
+            : "0 2px 12px rgba(0,0,0,0.06)",
+          border: active ? "2px solid #3b82f6" : "1px solid rgba(0,0,0,0.06)",
+          transition: "box-shadow 0.2s, border 0.2s",
+        }}
+      />
+    </div>
   );
 }
