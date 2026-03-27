@@ -1,28 +1,10 @@
 "use client";
 
 import { useRef, useEffect, useCallback, useState } from "react";
-import dynamic from "next/dynamic";
 import { useCanvasStore } from "@/stores/canvas-store";
 import ChartOverlay from "./ChartOverlay";
 import type { ExcalidrawElementData } from "@/types";
-import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
 
-const Excalidraw = dynamic(
-  () => import("@excalidraw/excalidraw").then((mod) => mod.Excalidraw),
-  {
-    ssr: false,
-    loading: () => (
-      <div className="flex h-full items-center justify-center text-sm text-gray-400">
-        <div className="text-center">
-          <div className="mb-2 h-8 w-8 mx-auto animate-spin rounded-full border-2 border-gray-300 border-t-blue-500" />
-          画布加载中...
-        </div>
-      </div>
-    ),
-  }
-);
-
-// Track AI-generated element IDs to replace (not accumulate) on update
 const AI_ELEMENT_PREFIX = "ai-ann-";
 
 function toExcalidrawElements(
@@ -86,17 +68,63 @@ function toExcalidrawElements(
   });
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type ExcalidrawAPI = any;
+
 export default function Canvas() {
   const { charts, annotations } = useCanvasStore();
-  const apiRef = useRef<ExcalidrawImperativeAPI | null>(null);
+  const apiRef = useRef<ExcalidrawAPI | null>(null);
   const prevAnnotationsRef = useRef<string>("");
   const [error, setError] = useState<string | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [ExcalidrawComp, setExcalidrawComp] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
 
-  const onExcalidrawAPI = useCallback((api: ExcalidrawImperativeAPI) => {
+  // Manually load Excalidraw on mount
+  useEffect(() => {
+    let cancelled = false;
+    console.log("[Canvas] Starting Excalidraw import...");
+    const startTime = performance.now();
+
+    import("@excalidraw/excalidraw")
+      .then((mod) => {
+        console.log("[Canvas] Excalidraw module loaded in", Math.round(performance.now() - startTime), "ms");
+        console.log("[Canvas] Module keys:", Object.keys(mod).slice(0, 10));
+        console.log("[Canvas] Excalidraw component type:", typeof mod.Excalidraw);
+        if (!cancelled) {
+          try {
+            import("@excalidraw/excalidraw/index.css");
+            console.log("[Canvas] CSS import triggered");
+          } catch (cssErr) {
+            console.warn("[Canvas] CSS import failed:", cssErr);
+          }
+          setExcalidrawComp(() => mod.Excalidraw);
+          setLoading(false);
+          console.log("[Canvas] State updated, loading=false");
+        } else {
+          console.log("[Canvas] Cancelled, skipping state update");
+        }
+      })
+      .catch((err) => {
+        console.error("[Canvas] Failed to load Excalidraw:", err);
+        console.error("[Canvas] Error name:", err.name, "message:", err.message);
+        console.error("[Canvas] Error stack:", err.stack);
+        if (!cancelled) {
+          setError(`画布加载失败: ${err.message}`);
+          setLoading(false);
+        }
+      });
+    return () => {
+      console.log("[Canvas] Cleanup, setting cancelled=true");
+      cancelled = true;
+    };
+  }, []);
+
+  const onExcalidrawAPI = useCallback((api: ExcalidrawAPI) => {
     apiRef.current = api;
   }, []);
 
-  // Sync AI annotations: replace old AI elements, preserve user-drawn elements
+  // Sync AI annotations
   useEffect(() => {
     const key = JSON.stringify(annotations);
     if (key === prevAnnotationsRef.current || !apiRef.current) return;
@@ -104,17 +132,14 @@ export default function Canvas() {
 
     try {
       const existing = apiRef.current.getSceneElements();
-      // Keep only user-drawn elements (not AI-generated)
       const userElements = existing.filter(
-        (el) => !el.id.startsWith(AI_ELEMENT_PREFIX)
+        (el: { id: string }) => !el.id.startsWith(AI_ELEMENT_PREFIX)
       );
-      // Build new AI elements
       const aiElements = annotations.flatMap((a) =>
         toExcalidrawElements(a.elements, a.id)
       );
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       apiRef.current.updateScene({
-        elements: [...userElements, ...aiElements] as any,
+        elements: [...userElements, ...aiElements],
       });
     } catch (err) {
       console.error("Failed to update Excalidraw scene:", err);
@@ -142,10 +167,21 @@ export default function Canvas() {
     );
   }
 
+  if (loading || !ExcalidrawComp) {
+    return (
+      <div className="flex h-full items-center justify-center text-sm text-gray-400">
+        <div className="text-center">
+          <div className="mb-2 h-8 w-8 mx-auto animate-spin rounded-full border-2 border-gray-300 border-t-blue-500" />
+          画布加载中...
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="relative h-full w-full">
       <div className="absolute inset-0 z-0">
-        <Excalidraw excalidrawAPI={onExcalidrawAPI} />
+        <ExcalidrawComp excalidrawAPI={onExcalidrawAPI} />
       </div>
       {charts.map((chart) => (
         <ChartOverlay key={chart.id} chart={chart} />

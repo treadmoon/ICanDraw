@@ -17,3 +17,15 @@ body {
   color: var(--foreground);
   font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
 }
+
+/* Excalidraw 容器确保撑满 */
+.excalidraw-wrapper,
+.excalidraw {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* 隐藏 Excalidraw 默认的欢迎屏 */
+.excalidraw .welcome-screen-center {
+  display: none !important;
+}
