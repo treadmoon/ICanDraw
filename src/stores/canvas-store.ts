@@ -1,54 +1,47 @@
 import { create } from "zustand";
-import type { CanvasState, ChartInstance, Annotation } from "@/types";
+import type { EChartsOption } from "echarts";
+import type { Annotation, Drawing } from "@/types";
 
-interface CanvasStore extends CanvasState {
-  addChart: (chart: ChartInstance) => void;
-  updateChart: (id: string, patch: Partial<ChartInstance>) => void;
+interface CanvasStore {
+  chartOptions: Record<string, EChartsOption>;
+  drawings: Drawing[];
+  annotations: Annotation[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  excalidrawAPI: any | null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  setExcalidrawAPI: (api: any) => void;
+  setChartOption: (id: string, option: EChartsOption) => void;
   removeChart: (id: string) => void;
-  addAnnotation: (annotation: Annotation) => void;
+  addDrawings: (drawings: Drawing[]) => void;
   setAnnotations: (annotations: Annotation[]) => void;
-  applyAIResponse: (charts: ChartInstance[], annotations: Annotation[]) => void;
   clear: () => void;
 }
 
 export const useCanvasStore = create<CanvasStore>((set) => ({
-  charts: [],
+  chartOptions: {},
+  drawings: [],
   annotations: [],
+  excalidrawAPI: null,
 
-  addChart: (chart) =>
-    set((s) => ({ charts: [...s.charts, chart] })),
+  setExcalidrawAPI: (api) => set({ excalidrawAPI: api }),
 
-  updateChart: (id, patch) =>
-    set((s) => ({
-      charts: s.charts.map((c) => (c.id === id ? { ...c, ...patch } : c)),
-    })),
+  setChartOption: (id, option) =>
+    set((s) => ({ chartOptions: { ...s.chartOptions, [id]: option } })),
 
   removeChart: (id) =>
-    set((s) => ({
-      charts: s.charts.filter((c) => c.id !== id),
-      annotations: s.annotations.filter((a) => a.bindTo !== id),
-    })),
+    set((s) => {
+      const { [id]: _, ...rest } = s.chartOptions;
+      return { chartOptions: rest, annotations: s.annotations.filter((a) => a.bindTo !== id) };
+    }),
 
-  addAnnotation: (annotation) =>
-    set((s) => ({ annotations: [...s.annotations, annotation] })),
+  addDrawings: (newDrawings) =>
+    set((s) => {
+      const map = new Map(s.drawings.map((d) => [d.id, d]));
+      for (const d of newDrawings) map.set(d.id, d);
+      return { drawings: Array.from(map.values()) };
+    }),
 
   setAnnotations: (annotations) => set({ annotations }),
 
-  applyAIResponse: (charts, annotations) =>
-    set((s) => {
-      const chartMap = new Map(s.charts.map((c) => [c.id, c]));
-      for (const chart of charts) {
-        chartMap.set(chart.id, chart);
-      }
-      const annotationMap = new Map(s.annotations.map((a) => [a.id, a]));
-      for (const ann of annotations) {
-        annotationMap.set(ann.id, ann);
-      }
-      return {
-        charts: Array.from(chartMap.values()),
-        annotations: Array.from(annotationMap.values()),
-      };
-    }),
-
-  clear: () => set({ charts: [], annotations: [] }),
+  clear: () => set({ chartOptions: {}, drawings: [], annotations: [] }),
 }));

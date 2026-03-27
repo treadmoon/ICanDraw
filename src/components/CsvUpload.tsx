@@ -2,6 +2,7 @@
 
 import { useCallback, useState } from "react";
 import Papa from "papaparse";
+import { useI18n } from "@/stores/i18n-store";
 import type { CsvSchema, CsvColumn } from "@/types";
 
 const MAX_CSV_SIZE = 10 * 1024 * 1024;
@@ -28,6 +29,7 @@ function analyzeCsv(results: Papa.ParseResult<Record<string, string>>): CsvSchem
 
 export default function CsvUpload({ onDataReady }: { onDataReady: (text: string) => void }) {
   const [dragOver, setDragOver] = useState(false);
+  const t = useI18n((s) => s.t);
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
@@ -37,7 +39,7 @@ export default function CsvUpload({ onDataReady }: { onDataReady: (text: string)
       if (!file || !file.name.endsWith(".csv")) return;
 
       if (file.size > MAX_CSV_SIZE) {
-        onDataReady(`CSV 文件过大（${(file.size / 1024 / 1024).toFixed(1)}MB），请上传 10MB 以内的文件`);
+        onDataReady(t.csvTooBig);
         return;
       }
 
@@ -46,14 +48,14 @@ export default function CsvUpload({ onDataReady }: { onDataReady: (text: string)
         skipEmptyLines: true,
         complete: (results) => {
           const schema = analyzeCsv(results);
-          const prompt = `我上传了一个 CSV 文件（${schema.rowCount} 行），列信息：${schema.columns
+          const colInfo = schema.columns
             .map((c) => `${c.name}(${c.type}${c.type === "number" ? `, min=${c.min}, max=${c.max}, mean=${c.mean}` : ""})`)
-            .join(", ")}。前3行预览：${JSON.stringify(schema.preview)}。请帮我选择合适的图表类型并生成可视化。`;
-          onDataReady(prompt);
+            .join(", ");
+          onDataReady(t.csvPrompt(schema.rowCount, colInfo, JSON.stringify(schema.preview)));
         },
       });
     },
-    [onDataReady]
+    [onDataReady, t]
   );
 
   return (
@@ -67,7 +69,7 @@ export default function CsvUpload({ onDataReady }: { onDataReady: (text: string)
           : "border-gray-200 text-gray-400 hover:border-gray-300 dark:border-gray-700"
       }`}
     >
-      {dragOver ? "松开以上传" : "拖拽 CSV 文件到这里"}
+      {dragOver ? t.csvRelease : t.csvDrop}
     </div>
   );
 }

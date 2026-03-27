@@ -1,8 +1,8 @@
 import type { EChartsOption } from "echarts";
 
-// --- Canvas State Types ---
+// --- Chart data from AI ---
 
-export interface ChartInstance {
+export interface ChartData {
   id: string;
   x: number;
   y: number;
@@ -11,26 +11,33 @@ export interface ChartInstance {
   option: EChartsOption;
 }
 
-export interface Annotation {
-  id: string;
-  bindTo?: string; // chart id
-  elements: ExcalidrawElementData[];
-}
+// --- Excalidraw element data (shared by drawings & annotations) ---
 
 export interface ExcalidrawElementData {
-  type: "arrow" | "text" | "ellipse" | "rectangle" | "line";
+  type: "arrow" | "text" | "ellipse" | "rectangle" | "diamond" | "line";
   x: number;
   y: number;
   width?: number;
   height?: number;
   text?: string;
   strokeColor?: string;
+  backgroundColor?: string;
   points?: number[][];
 }
 
-export interface CanvasState {
-  charts: ChartInstance[];
-  annotations: Annotation[];
+// --- Drawing: standalone Excalidraw diagram (flowchart, mindmap, etc.) ---
+
+export interface Drawing {
+  id: string;
+  elements: ExcalidrawElementData[];
+}
+
+// --- Annotation: supplementary marks bound to a chart ---
+
+export interface Annotation {
+  id: string;
+  bindTo?: string;
+  elements: ExcalidrawElementData[];
 }
 
 // --- Chat Types ---
@@ -45,7 +52,8 @@ export interface ChatMessage {
 // --- AI Response Types ---
 
 export interface AIResponse {
-  charts: ChartInstance[];
+  charts: ChartData[];
+  drawings: Drawing[];
   annotations: Annotation[];
   summary: string;
 }

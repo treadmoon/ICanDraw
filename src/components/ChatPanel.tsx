@@ -6,26 +6,141 @@ import { useCanvasStore } from "@/stores/canvas-store";
 import ChatMessageBubble from "./ChatMessage";
 import CsvUpload from "./CsvUpload";
 import { generateId } from "@/lib/canvas-utils";
-import type { AIResponse } from "@/types";
+import { useI18n } from "@/stores/i18n-store";
+import type { AIResponse, ChartData, Annotation, Drawing } from "@/types";
 
-function isValidAIResponse(data: unknown): data is AIResponse {
-  if (!data || typeof data !== "object") return false;
-  const d = data as Record<string, unknown>;
-  return Array.isArray(d.charts) && Array.isArray(d.annotations) && typeof d.summary === "string";
+const ECHART_PROTOCOL = "echart://";
+
+function normalizeChart(raw: Record<string, unknown>, index: number): ChartData {
+  if (raw.option && typeof raw.option === "object") {
+    return {
+      id: (raw.id as string) ?? `chart-${index}`,
+      x: (raw.x as number) ?? 100 + index * 550,
+      y: (raw.y as number) ?? 100,
+      width: (raw.width as number) ?? 500,
+      height: (raw.height as number) ?? 350,
+      option: raw.option as ChartData["option"],
+    };
+  }
+  const data = raw.data as Array<Record<string, unknown>> | undefined;
+  const xData = data?.map((d) => String(d.x ?? d.name ?? d.label ?? "")) ?? [];
+  const yData = data?.map((d) => Number(d.y ?? d.value ?? 0)) ?? [];
+  const chartType = String(raw.type ?? "bar");
+
+  const option: Record<string, unknown> = {
+    title: { text: String(raw.title ?? "") },
+    tooltip: { trigger: chartType === "pie" ? "item" : "axis" },
+    legend: {},
+  };
+
+  if (chartType === "pie") {
+    option.series = [{ type: "pie", data: data?.map((d) => ({ name: String(d.x ?? d.name ?? ""), value: Number(d.y ?? d.value ?? 0) })) ?? [] }];
+  } else {
+    option.xAxis = { type: "category", data: xData, name: String(raw.xAxisName ?? "") };
+    option.yAxis = { type: "value", name: String(raw.yAxisName ?? "") };
+    option.series = [{ type: chartType, data: yData }];
+  }
+
+  return {
+    id: (raw.id as string) ?? `chart-${index}`,
+    x: (raw.x as number) ?? 100 + index * 550,
+    y: (raw.y as number) ?? 100,
+    width: (raw.width as number) ?? 500,
+    height: (raw.height as number) ?? 350,
+    option,
+  };
 }
 
-const SUGGESTIONS = [
-  "画一个2024年Q1-Q4的销售趋势折线图",
-  "用饼图展示市场份额分布",
-  "对比五个城市的人口柱状图",
-];
+function normalizeAnnotation(raw: Record<string, unknown>, index: number): Annotation {
+  if (Array.isArray(raw.elements) && raw.elements.length > 0) {
+    return { id: (raw.id as string) ?? `ann-${index}`, bindTo: raw.bindTo as string | undefined, elements: raw.elements };
+  }
+  const text = String(raw.text ?? "");
+  const pos = (raw.position as Record<string, unknown>) ?? {};
+  return {
+    id: (raw.id as string) ?? `ann-${index}`,
+    bindTo: raw.bindTo as string | undefined,
+    elements: text ? [{ type: "text" as const, x: Number(pos.x ?? 0) + 100, y: Number(pos.y ?? 0) - 30, text }] : [],
+  };
+}
+
+function normalizeResponse(data: Record<string, unknown>): AIResponse | null {
+  // Accept response if it has charts OR drawings
+  if (!Array.isArray(data.charts) && !Array.isArray(data.drawings)) return null;
+  const summary = typeof data.summary === "string" ? data.summary : useI18n.getState().t.generated;
+  const charts = Array.isArray(data.charts) ? (data.charts as Record<string, unknown>[]).map(normalizeChart) : [];
+  const rawDrawings = Array.isArray(data.drawings) ? (data.drawings as Record<string, unknown>[]) : [];
+  const drawings: Drawing[] = rawDrawings.map((d, i) => ({
+    id: (d.id as string) ?? `drawing-${i}`,
+    elements: Array.isArray(d.elements) ? d.elements : [],
+  }));
+  const rawAnns = Array.isArray(data.annotations) ? (data.annotations as Record<string, unknown>[]) : [];
+  const annotations = rawAnns.map(normalizeAnnotation);
+  return { charts, drawings, annotations, summary };
+}
+
+/** Insert elements into Excalidraw and store data */
+function applyToCanvas(response: AIResponse) {
+  const store = useCanvasStore.getState();
+  const api = store.excalidrawAPI;
+
+  // Store chart options
+  for (const chart of response.charts) {
+    store.setChartOption(chart.id, chart.option);
+  }
+
+  // Store drawings (rendered via Canvas sync effect)
+  if (response.drawings.length > 0) {
+    store.addDrawings(response.drawings);
+  }
+
+  // Store annotations
+  if (response.annotations.length > 0) {
+    store.setAnnotations([...store.annotations, ...response.annotations]);
+  }
+
+  // Insert ECharts embeddable elements
+  if (api && response.charts.length > 0) {
+    const existing = api.getSceneElements();
+    const newElements = response.charts.map((chart: ChartData) => ({
+      type: "embeddable" as const,
+      id: `echart-${chart.id}`,
+      x: chart.x,
+      y: chart.y,
+      width: chart.width,
+      height: chart.height,
+      link: `${ECHART_PROTOCOL}${chart.id}`,
+      strokeColor: "#e0e0e0",
+      backgroundColor: "transparent",
+      fillStyle: "solid" as const,
+      strokeWidth: 1,
+      strokeStyle: "solid" as const,
+      roughness: 0,
+      opacity: 100,
+      angle: 0,
+      seed: Math.floor(Math.random() * 100000),
+      version: 1,
+      versionNonce: Math.floor(Math.random() * 1000000),
+      isDeleted: false,
+      boundElements: null,
+      locked: false,
+      roundness: { type: 3 },
+      index: `b${Date.now()}`,
+      frameId: null,
+      groupIds: [],
+    }));
+
+    api.updateScene({ elements: [...existing, ...newElements] });
+  }
+}
 
 export default function ChatPanel({ onClose }: { onClose?: () => void }) {
   const [input, setInput] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const { messages, isLoading, addMessage, setLoading } = useChatStore();
-  const applyAIResponse = useCanvasStore((s) => s.applyAIResponse);
+  const { t, locale, setLocale } = useI18n();
+  const suggestions = [t.suggestion1, t.suggestion2, t.suggestion3];
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -44,8 +159,19 @@ export default function ChatPanel({ onClose }: { onClose?: () => void }) {
       setLoading(true);
 
       try {
-        const { charts, annotations } = useCanvasStore.getState();
-        const context = useChatStore.getState().buildContext({ charts, annotations });
+        const { chartOptions, annotations } = useCanvasStore.getState();
+        const chartSummary = Object.keys(chartOptions).length > 0
+          ? Object.keys(chartOptions).map((id) => `Chart "${id}"`).join("; ")
+          : "";
+        const canvasContext = chartSummary
+          ? `[画布上下文] 当前画布有 ${Object.keys(chartOptions).length} 个图表：${chartSummary}。${annotations.length} 个批注。请基于此上下文处理我的下一条指令。`
+          : "";
+
+        const context: Array<{ role: string; content: string }> = [];
+        for (const m of useChatStore.getState().messages) {
+          context.push({ role: m.role, content: m.content });
+        }
+        if (canvasContext) context.push({ role: "user", content: canvasContext });
         context.push({ role: "user", content: text.trim() });
 
         const res = await fetch("/api/chat", {
@@ -58,31 +184,32 @@ export default function ChatPanel({ onClose }: { onClose?: () => void }) {
         const data = await res.json();
 
         if (!res.ok) {
-          addMessage({ id: generateId(), role: "assistant", content: `⚠️ ${data.error ?? `服务异常 (${res.status})`}`, canvasDiff: null });
+          addMessage({ id: generateId(), role: "assistant", content: `⚠️ ${data.error ?? `${t.serviceError} (${res.status})`}`, canvasDiff: null });
           return;
         }
 
-        if (!isValidAIResponse(data)) {
-          addMessage({ id: generateId(), role: "assistant", content: "⚠️ AI 返回了无法解析的数据，请重试", canvasDiff: null });
+        const normalized = normalizeResponse(data);
+        if (!normalized) {
+          addMessage({ id: generateId(), role: "assistant", content: `⚠️ ${t.parseError}`, canvasDiff: null });
           return;
         }
 
-        applyAIResponse(data.charts, data.annotations);
-        addMessage({ id: generateId(), role: "assistant", content: data.summary, canvasDiff: data });
+        applyToCanvas(normalized);
+        addMessage({ id: generateId(), role: "assistant", content: normalized.summary, canvasDiff: normalized });
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") return;
         const isNetwork = err instanceof TypeError && err.message.includes("fetch");
         addMessage({
           id: generateId(),
           role: "assistant",
-          content: isNetwork ? "⚠️ 网络连接失败，请检查网络后重试" : `⚠️ 请求失败：${err instanceof Error ? err.message : "未知错误"}`,
+          content: isNetwork ? `⚠️ ${t.networkError}` : `⚠️ ${t.requestFail}：${err instanceof Error ? err.message : ""}`,
           canvasDiff: null,
         });
       } finally {
         setLoading(false);
       }
     },
-    [isLoading, addMessage, setLoading, applyAIResponse]
+    [isLoading, addMessage, setLoading]
   );
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -97,21 +224,29 @@ export default function ChatPanel({ onClose }: { onClose?: () => void }) {
       {/* Header */}
       <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3 dark:border-gray-800">
         <div>
-          <h1 className="text-base font-semibold tracking-tight">ICanDraw</h1>
-          <p className="text-[11px] text-gray-400">AI 数据叙事画布</p>
+          <h1 className="text-base font-semibold tracking-tight">{t.appTitle}</h1>
+          <p className="text-[11px] text-gray-400">{t.appSubtitle}</p>
         </div>
-        {onClose && (
+        <div className="flex items-center gap-1">
           <button
-            onClick={onClose}
-            className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800"
-            title="收起面板"
+            onClick={() => setLocale(locale === "zh" ? "en" : "zh")}
+            className="rounded-lg px-2 py-1 text-[11px] text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800"
           >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M11 19l-7-7 7-7" />
-              <path d="M18 19l-7-7 7-7" />
-            </svg>
+            {locale === "zh" ? "EN" : "中文"}
           </button>
-        )}
+          {onClose && (
+            <button
+              onClick={onClose}
+              className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800"
+              title={t.collapsePanel}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M11 19l-7-7 7-7" />
+                <path d="M18 19l-7-7 7-7" />
+              </svg>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Messages */}
@@ -120,13 +255,13 @@ export default function ChatPanel({ onClose }: { onClose?: () => void }) {
           <div className="flex h-full flex-col items-center justify-center">
             <div className="mb-6 text-center">
               <div className="mb-3 text-4xl">🎨</div>
-              <p className="text-sm text-gray-500">描述你想要的图表</p>
-              <p className="text-sm text-gray-500">AI 帮你生成到画布上</p>
+              <p className="text-sm text-gray-500">{t.describeChart}</p>
+              <p className="text-sm text-gray-500">{t.aiHelp}</p>
             </div>
             {/* 快捷建议 */}
             <div className="w-full space-y-2">
-              <p className="text-[11px] text-gray-400 px-1">试试这些：</p>
-              {SUGGESTIONS.map((s) => (
+              <p className="text-[11px] text-gray-400 px-1">{t.trySuggestions}</p>
+              {suggestions.map((s) => (
                 <button
                   key={s}
                   onClick={() => send(s)}
@@ -150,7 +285,7 @@ export default function ChatPanel({ onClose }: { onClose?: () => void }) {
                 <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-bounce [animation-delay:150ms]" />
                 <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-bounce [animation-delay:300ms]" />
               </span>
-              生成中...
+              {t.generating}
             </div>
           </div>
         )}
@@ -167,7 +302,7 @@ export default function ChatPanel({ onClose }: { onClose?: () => void }) {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="描述你想要的图表..."
+            placeholder={t.inputPlaceholder}
             rows={1}
             className="flex-1 resize-none bg-transparent text-sm outline-none placeholder:text-gray-400"
             disabled={isLoading}
