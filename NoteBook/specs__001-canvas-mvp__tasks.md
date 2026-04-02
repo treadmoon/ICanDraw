@@ -18,7 +18,7 @@
 - [x] T006 Create Zustand chat store (`src/stores/chat-store.ts`) — messages array, addMessage, conversation context builder
 - [x] T007 Create AI output Zod schema (`src/lib/ai/schema.ts`) — structured output definition for charts + annotations
 - [x] T008 Create system prompts (`src/lib/ai/prompts.ts`) — chart generation prompt, annotation generation prompt
-- [x] T009 Create AI chat API route (`src/app/api/chat/route.ts`) — direct fetch to 火山方舟 API, JSON.parse response (originally planned Vercel AI SDK, changed due to 豆包 model incompatibility)
+- [x] T009 Create AI chat API route (`src/app/api/chat/route.ts`) — Vercel AI SDK, structured output with Zod schema
 - [x] T010 Create root layout (`src/app/layout.tsx`) with global styles and font setup
 
 **Checkpoint**: API route callable, stores functional, types defined
@@ -33,7 +33,7 @@
 
 - [x] T011 Create ChatMessage component (`src/components/ChatMessage.tsx`) — render user/assistant messages with markdown
 - [x] T012 Create ChatPanel component (`src/components/ChatPanel.tsx`) — message list, input box, send handler, streaming display
-- [x] T013 Create EChartEmbeddable component (`src/components/EChartEmbeddable.tsx`) — renders ECharts inside Excalidraw embeddable element, with ResizeObserver (originally planned as ChartOverlay with absolute positioning, changed to embeddable for drag/resize/rotate support)
+- [x] T013 Create ChartOverlay component (`src/components/ChartOverlay.tsx`) — single ECharts instance, absolute positioned, resizable
 - [x] T014 Create Canvas component (`src/components/Canvas.tsx`) — Excalidraw wrapper + ChartOverlay instances from store
 - [x] T015 Create main page (`src/app/page.tsx`) — left/right split layout, ChatPanel + Canvas
 - [x] T016 Wire chat flow: user input → API call → parse AI response → update canvas store → render chart
@@ -79,9 +79,9 @@
 ### Implementation
 
 - [x] T025 Create CsvUpload component (`src/components/CsvUpload.tsx`) — drag-and-drop zone in chat panel
-- [x] T026 CSV parsing integrated in CsvUpload component (`src/components/CsvUpload.tsx`) — Papa Parse in-browser, schema extraction + stats (originally planned as separate `src/lib/csv-parser.ts`, consolidated into component)
+- [x] T026 Create csv-parser (`src/lib/csv-parser.ts`) — Papa Parse wrapper, extract schema + basic stats
 - [x] T027 Update chat flow: CSV upload → parse locally → send schema+stats to AI → generate chart + annotations
-- [x] T028 Support user follow-up instructions to customize CSV visualization ("用第2列做X轴") — implemented via conversation context passing
+- [ ] T028 Support user follow-up instructions to customize CSV visualization ("用第2列做X轴")
 
 **Checkpoint**: 拖入 CSV 文件，AI 自动生成图表和批注
 
@@ -89,24 +89,9 @@
 
 ## Phase 7: Polish
 
-- [x] T029 Add loading states and error handling — `loading.tsx` (page spinner), `error.tsx` (route error boundary with retry), `global-error.tsx` (global fallback with inline styles)
+- [ ] T029 Add loading states and error handling for AI responses
 - [ ] T030 Responsive layout adjustments (panel resize handle)
-- [x] T031 Add .gitignore, README.md, environment variable documentation — `.env.example` with ARK_API_KEY/ARK_MODEL_ID, README.md present
-
----
-
-## Phase 8: Post-MVP Iterations (added retroactively)
-
-> 以下任务在 MVP 开发过程中完成，但原始任务清单未包含。补录以保持文档完整性。
-
-- [x] T032 Layout change: swap canvas and chat panel — canvas on left (flex-1), chat panel on right (360px collapsible) (`src/app/page.tsx`)
-- [x] T033 Create EChartEmbeddable component (`src/components/EChartEmbeddable.tsx`) — render ECharts inside Excalidraw embeddable elements via `echart://` protocol, replacing the deleted ChartOverlay overlay approach
-- [x] T034 Add Excalidraw native drawings support (flowcharts, mind maps, architecture diagrams) — new `Drawing` type in `types/index.ts`, extended SYSTEM_PROMPT in `prompts.ts`, `toExcalidrawElements()` converter in `Canvas.tsx`, `addDrawings()` in canvas-store
-- [x] T035 Create i18n store (`src/stores/i18n-store.ts`) — Chinese/English dictionary, `useI18n` hook, locale toggle in ChatPanel header
-- [x] T036 Remove Vercel AI SDK dependency from API route — replace `generateObject` with direct `fetch` to 火山方舟 API (`https://ark.cn-beijing.volces.com/api/v3/chat/completions`), manual JSON.parse with markdown fence handling
-- [x] T037 Add data normalization layer in ChatPanel — `normalizeChart()` (handle both full option and simplified data array formats), `normalizeAnnotation()` (handle both elements array and text+position formats), `normalizeResponse()` (validate response structure)
-- [x] T038 Fix arrow rendering — auto-calculate arrow width/height from points array in `toExcalidrawElements()`, fixing misaligned flowchart connectors
-- [x] T039 Auto-generate text labels for shape elements — `toExcalidrawElements()` creates centered text elements for rectangles/diamonds/ellipses with text, with CJK-aware width calculation
+- [ ] T031 Add .gitignore, README.md, environment variable documentation
 
 ---
 

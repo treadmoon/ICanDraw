@@ -1,8 +1,34 @@
 import { SYSTEM_PROMPT } from "@/lib/ai/prompts";
 
 const MAX_MESSAGES = 50;
+const MAX_CONTENT_LENGTH = 10000;
+const RATE_LIMIT_WINDOW = 60_000; // 1 minute
+const RATE_LIMIT_MAX = 20; // max requests per window
+const requestLog = new Map<string, number[]>();
+
+function isRateLimited(ip: string): boolean {
+  const now = Date.now();
+  const timestamps = requestLog.get(ip) ?? [];
+  const recent = timestamps.filter((t) => now - t < RATE_LIMIT_WINDOW);
+  recent.push(now);
+  requestLog.set(ip, recent);
+  return recent.length > RATE_LIMIT_MAX;
+}
+
+function sanitizeUserContent(content: string): string {
+  // Truncate overly long messages
+  const truncated = content.slice(0, MAX_CONTENT_LENGTH);
+  // Wrap user content in delimiters to reduce prompt injection effectiveness
+  return `<user_message>\n${truncated}\n</user_message>`;
+}
 
 export async function POST(req: Request) {
+  // Rate limiting
+  const ip = req.headers.get("x-forwarded-for") ?? req.headers.get("x-real-ip") ?? "unknown";
+  if (isRateLimited(ip)) {
+    return Response.json({ error: "请求过于频繁，请稍后再试" }, { status: 429 });
+  }
+
   const apiKey = process.env.ARK_API_KEY;
   if (!apiKey || apiKey === "your-ark-api-key-here") {
     return Response.json(
@@ -25,7 +51,10 @@ export async function POST(req: Request) {
 
     const safeMessages = messages
       .filter((m) => m.role !== "system")
-      .map((m) => ({ role: m.role as "user" | "assistant", content: m.content }));
+      .map((m) => ({
+        role: m.role as "user" | "assistant",
+        content: m.role === "user" ? sanitizeUserContent(m.content) : m.content.slice(0, MAX_CONTENT_LENGTH),
+      }));
 
     const res = await fetch("https://ark.cn-beijing.volces.com/api/v3/chat/completions", {
       method: "POST",
@@ -60,6 +89,11 @@ export async function POST(req: Request) {
   } catch (err) {
     const message = err instanceof Error ? err.message : "未知错误";
     console.error("[API Error]", message);
-    return Response.json({ error: `AI 服务异常：${message}` }, { status: 500 });
+    // Don't leak internal error details to client
+    const isJsonError = message.includes("JSON");
+    return Response.json(
+      { error: isJsonError ? "AI 返回了无法解析的数据，请重试" : "AI 服务异常，请稍后重试" },
+      { status: 500 }
+    );
   }
 }

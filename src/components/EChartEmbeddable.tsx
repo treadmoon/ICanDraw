@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useMemo } from "react";
 import * as echarts from "echarts";
 import { useCanvasStore } from "@/stores/canvas-store";
 
@@ -8,7 +8,32 @@ import { useCanvasStore } from "@/stores/canvas-store";
 export default function EChartEmbeddable({ chartId }: { chartId: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
-  const option = useCanvasStore((s) => s.chartOptions[chartId]);
+  const rawOption = useCanvasStore((s) => s.chartOptions[chartId]);
+
+  // Sanitize option: deep-clone via JSON to strip any function references,
+  // and remove known dangerous keys that ECharts might eval
+  const option = useMemo(() => {
+    if (!rawOption) return null;
+    try {
+      const clean = JSON.parse(JSON.stringify(rawOption));
+      // Remove keys that could execute code
+      const dangerous = ["formatter", "color", "renderItem", "dispatch"];
+      const stripFunctions = (obj: Record<string, unknown>) => {
+        for (const key of Object.keys(obj)) {
+          if (dangerous.includes(key) && typeof obj[key] === "string" && obj[key].toString().includes("function")) {
+            delete obj[key];
+          }
+          if (obj[key] && typeof obj[key] === "object") {
+            stripFunctions(obj[key] as Record<string, unknown>);
+          }
+        }
+      };
+      stripFunctions(clean);
+      return clean;
+    } catch {
+      return null;
+    }
+  }, [rawOption]);
 
   useEffect(() => {
     if (!containerRef.current) return;

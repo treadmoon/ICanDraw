@@ -1,0 +1,13 @@
+{
+  "name": "default",
+  "description": "ICanDraw default agent with decision logging",
+  "hooks": {
+    "stop": [
+      {
+        "command": "bash .kiro/hooks/log-decisions.sh",
+        "description": "Auto-log technical decisions from AI responses to docs/decision-log.md",
+        "timeout_ms": 5000
+      }
+    ]
+  }
+}
