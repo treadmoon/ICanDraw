@@ -3,13 +3,21 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useChatStore } from "@/stores/chat-store";
 import { useCanvasStore } from "@/stores/canvas-store";
+import { useProjectStore } from "@/stores/project-store";
 import ChatMessageBubble from "./ChatMessage";
 import CsvUpload from "./CsvUpload";
 import { generateId } from "@/lib/canvas-utils";
 import { useI18n } from "@/stores/i18n-store";
-import type { AIResponse, ChartData, Annotation, Drawing } from "@/types";
+import type { AIResponse, ChartData, Annotation, Drawing, ProjectAnalysis } from "@/types";
 
 const ECHART_PROTOCOL = "echart://";
+
+// Detect GitHub URL patterns
+const GITHUB_URL_REGEX = /(?:https?:\/\/)?(?:www\.)?github\.com\/[a-zA-Z0-9](?:[a-zA-Z0-9]|-(?=[a-zA-Z0-9]))*\/[a-zA-Z0-9._-]+\/?(?:\.git)?$/;
+
+function isGitHubUrl(text: string): boolean {
+  return GITHUB_URL_REGEX.test(text.trim());
+}
 
 function normalizeChart(raw: Record<string, unknown>, index: number): ChartData {
   if (raw.option && typeof raw.option === "object") {
@@ -134,13 +142,34 @@ function applyToCanvas(response: AIResponse) {
   }
 }
 
+/** Apply drawings from SSE streaming */
+function applyDrawingsFromSSE(
+  drawings: Array<{ id: string; elements: Array<Record<string, unknown>> }>
+) {
+  const store = useCanvasStore.getState();
+
+  // Note: convertToExcalidrawElements already applies offsets based on diagram index:
+  // - Diagram 0: offset (0, 0)
+  // - Diagram 1: offset (800, 0)
+  // - Diagram 2: offset (0, 500)
+  // - Diagram 3: offset (800, 500)
+  // So we just pass through the elements directly without additional offset.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  store.addDrawings(drawings as any);
+}
+
 export default function ChatPanel({ onClose }: { onClose?: () => void }) {
   const [input, setInput] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const { messages, isLoading, addMessage, setLoading } = useChatStore();
   const { t, locale, setLocale } = useI18n();
-  const suggestions = [t.suggestion1, t.suggestion2, t.suggestion3];
+  const suggestions = [t.suggestion1, t.suggestion2, t.suggestion3, t.suggestion4];
+
+  // Subscribe to project store for progress updates
+  const projectStatus = useProjectStore((s) => s.status);
+  const projectProgress = useProjectStore((s) => s.progress);
+  const diagrams = useProjectStore((s) => s.diagrams);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -157,6 +186,158 @@ export default function ChatPanel({ onClose }: { onClose?: () => void }) {
       addMessage({ id: generateId(), role: "user", content: text.trim(), canvasDiff: null });
       setInput("");
       setLoading(true);
+
+      // Check if this is a GitHub URL - trigger project analysis with SSE
+      if (isGitHubUrl(text)) {
+        const projectStore = useProjectStore.getState();
+        projectStore.reset();
+        projectStore.setStatus("analyzing", t.analyzingRepo);
+
+        const repoUrl = text.trim();
+        let finalSummary = "";
+        let insights: string[] = [];
+        let allDrawings: Array<{ id: string; elements: Array<Record<string, unknown>> }> = [];
+        let hasError = false;
+
+        try {
+          const res = await fetch("/api/analyze", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ repoUrl }),
+            signal: controller.signal,
+          });
+
+          if (!res.ok) {
+            const data = await res.json();
+            projectStore.setError(data.error ?? t.analysisError);
+            addMessage({
+              id: generateId(),
+              role: "assistant",
+              content: `⚠️ ${t.analysisError}：${data.error ?? ""}`,
+              canvasDiff: null,
+            });
+            setLoading(false);
+            return;
+          }
+
+          // Handle SSE stream
+          const reader = res.body?.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+
+          if (!reader) {
+            throw new Error("无法读取响应流");
+          }
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() ?? "";
+
+            for (const line of lines) {
+              if (line.startsWith("event:") || !line.startsWith("data:")) continue;
+
+              const dataMatch = line.match(/^data:\s*(.*)$/);
+              if (!dataMatch) continue;
+
+              try {
+                const event = JSON.parse(dataMatch[1]);
+
+                switch (event.type) {
+                  case "step_start":
+                    projectStore.addStep(event.step, event.description);
+                    break;
+
+                  case "step_progress":
+                    projectStore.updateStepProgress(event.step, event.message);
+                    break;
+
+                  case "step_complete":
+                    // Step completed
+                    break;
+
+                  case "analysis_update":
+                    projectStore.completeStep(
+                      event.step,
+                      event.findings ?? [],
+                      event.moduleGraph ?? { nodes: [], edges: [] }
+                    );
+                    break;
+
+                  case "diagram_start":
+                    projectStore.addDiagram({
+                      index: event.index,
+                      total: event.total,
+                      diagramType: event.diagramType,
+                      title: event.title,
+                      status: "generating",
+                    });
+                    break;
+
+                  case "diagram_complete":
+                    projectStore.completeDiagram(event.index);
+                    break;
+
+                  case "diagrams_ready":
+                    if (event.drawings) {
+                      allDrawings = event.drawings;
+                      applyDrawingsFromSSE(event.drawings);
+                    }
+                    break;
+
+                  case "done":
+                    finalSummary = event.summary ?? "";
+                    insights = event.insights ?? [];
+                    projectStore.setDiagramsReady(finalSummary, insights);
+                    break;
+
+                  case "error":
+                    hasError = true;
+                    if (event.step) {
+                      projectStore.failStep(event.step, event.message);
+                    } else {
+                      projectStore.setError(event.message);
+                    }
+                    // Don't break - let the loop finish naturally
+                    break;
+                }
+              } catch {
+                // Ignore parse errors for individual events
+              }
+            }
+          }
+
+          // Build final message - only if no error occurred
+          if (!hasError) {
+            const insightsText = insights.length > 0 ? `\n\n**发现**:\n${insights.map((i) => `• ${i}`).join("\n")}` : "";
+            addMessage({
+              id: generateId(),
+              role: "assistant",
+              content: `${finalSummary}${insightsText}\n\n已生成 ${allDrawings.length} 张分析图表到画布上。`,
+              canvasDiff: null,
+            });
+          }
+        } catch (err) {
+          if (err instanceof DOMException && err.name === "AbortError") {
+            projectStore.setError("分析已取消");
+            return;
+          }
+          const isNetwork = err instanceof TypeError && err.message.includes("fetch");
+          projectStore.setError(isNetwork ? t.networkError : String(err));
+          addMessage({
+            id: generateId(),
+            role: "assistant",
+            content: `⚠️ ${t.analysisError}：${isNetwork ? t.networkError : err instanceof Error ? err.message : ""}`,
+            canvasDiff: null,
+          });
+        } finally {
+          setLoading(false);
+        }
+        return;
+      }
 
       try {
         const { chartOptions, annotations } = useCanvasStore.getState();
@@ -278,15 +459,46 @@ export default function ChatPanel({ onClose }: { onClose?: () => void }) {
           <ChatMessageBubble key={m.id} message={m} />
         ))}
         {isLoading && (
-          <div className="flex justify-start mb-3">
+          <div className="flex flex-col gap-2 justify-start mb-3">
+            {/* Progress message */}
             <div className="flex items-center gap-2 rounded-2xl bg-gray-50 px-4 py-2.5 text-sm text-gray-500 dark:bg-gray-800">
               <span className="flex gap-1">
                 <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-bounce [animation-delay:0ms]" />
                 <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-bounce [animation-delay:150ms]" />
                 <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-bounce [animation-delay:300ms]" />
               </span>
-              {t.generating}
+              {projectProgress || t.generating}
             </div>
+
+            {/* Diagram progress */}
+            {diagrams.length > 0 && (
+              <div className="flex flex-wrap gap-2 ml-2">
+                {diagrams.map((d) => (
+                  <div
+                    key={d.index}
+                    className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium ${
+                      d.status === "done"
+                        ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400"
+                        : d.status === "generating"
+                        ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400"
+                        : "bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400"
+                    }`}
+                  >
+                    {d.status === "done" ? (
+                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                      </svg>
+                    ) : d.status === "generating" ? (
+                      <span className="h-2 w-2 rounded-full bg-blue-500 animate-pulse" />
+                    ) : (
+                      <span className="h-2 w-2 rounded-full bg-gray-400" />
+                    )}
+                    <span>{d.title}</span>
+                    <span className="text-xs opacity-70">{d.index}/{d.total}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
         <div ref={messagesEndRef} />

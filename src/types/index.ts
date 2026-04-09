@@ -13,6 +13,14 @@ export interface ChartData {
 
 // --- Excalidraw element data (shared by drawings & annotations) ---
 
+/** 源码位置标记 - 用于流程图溯源 */
+export interface SourceLocation {
+  file: string;
+  function?: string;
+  line?: number;
+  event?: string;
+}
+
 export interface ExcalidrawElementData {
   type: "arrow" | "text" | "ellipse" | "rectangle" | "diamond" | "line";
   x: number;
@@ -23,6 +31,10 @@ export interface ExcalidrawElementData {
   strokeColor?: string;
   backgroundColor?: string;
   points?: number[][];
+  // 溯源字段 - 用于学习目的
+  sourceLocation?: SourceLocation;
+  apiRoute?: string;
+  flowDescription?: string;
 }
 
 // --- Drawing: standalone Excalidraw diagram (flowchart, mindmap, etc.) ---
@@ -72,4 +84,67 @@ export interface CsvColumn {
   min?: number;
   max?: number;
   mean?: number;
+}
+
+// --- GitHub Project Analysis Types ---
+
+export type DiagramType =
+  | "architecture"
+  | "module-graph"
+  | "data-flow"
+  | "state-machine"
+  | "flowchart"
+  | "overview";
+
+export interface RepoInfo {
+  name: string;
+  fullName: string;
+  description: string | null;
+  language: string | null;
+  stars: number;
+  forks: number;
+  defaultBranch: string;
+}
+
+export interface FileNode {
+  path: string;
+  name: string;
+  type: "file" | "dir";
+  size?: number;
+  children?: FileNode[];
+}
+
+export interface ModuleNode {
+  id: string;
+  name: string;
+  path: string;
+  type: "component" | "hook" | "store" | "api" | "lib" | "page" | "config" | "module";
+  connections: number;
+}
+
+export interface ModuleEdge {
+  from: string;
+  to: string;
+  type: "imports" | "exports" | "calls";
+}
+
+export interface ModuleGraph {
+  nodes: ModuleNode[];
+  edges: ModuleEdge[];
+}
+
+export interface ProjectDiagram {
+  type: DiagramType;
+  title: string;
+  drawings: Drawing[];
+  charts: ChartData[];
+  annotations: Annotation[];
+}
+
+export interface ProjectAnalysis {
+  repoInfo: RepoInfo;
+  fileTree: FileNode[];
+  moduleGraph: ModuleGraph;
+  diagrams: ProjectDiagram[];
+  summary: string;
 }

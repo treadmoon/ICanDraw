@@ -4,7 +4,7 @@ import { useRef, useEffect, useCallback, useState } from "react";
 import { useCanvasStore } from "@/stores/canvas-store";
 import { useI18n } from "@/stores/i18n-store";
 import EChartEmbeddable from "./EChartEmbeddable";
-import type { ExcalidrawElementData } from "@/types";
+import type { ExcalidrawElementData, SourceLocation } from "@/types";
 
 const ECHART_PROTOCOL = "echart://";
 const AI_PREFIX = "ai-el-";
@@ -26,8 +26,8 @@ function toExcalidrawElements(
       const pts = el.points;
       const xs = pts.map((p) => p[0]);
       const ys = pts.map((p) => p[1]);
-      w = Math.max(...xs) - Math.min(...xs);
-      h = Math.max(...ys) - Math.min(...ys);
+      w = Math.max(1, Math.max(...xs) - Math.min(...xs));
+      h = Math.max(1, Math.max(...ys) - Math.min(...ys));
     }
 
     const base: Record<string, unknown> = {
@@ -35,8 +35,8 @@ function toExcalidrawElements(
       type: excType,
       x: el.x,
       y: el.y,
-      width: w,
-      height: h,
+      width: Math.max(50, w),
+      height: Math.max(30, h),
       strokeColor: el.strokeColor ?? "#1e1e1e",
       backgroundColor: el.backgroundColor ?? "transparent",
       fillStyle: el.backgroundColor ? "solid" : "hachure",
@@ -79,6 +79,17 @@ function toExcalidrawElements(
         base.startArrowhead = null;
         base.endArrowhead = "arrow";
       }
+    }
+
+    // Preserve source tracing information for learning
+    if (el.sourceLocation) {
+      base.sourceLocation = el.sourceLocation;
+    }
+    if (el.apiRoute) {
+      base.apiRoute = el.apiRoute;
+    }
+    if (el.flowDescription) {
+      base.flowDescription = el.flowDescription;
     }
 
     results.push(base);
@@ -149,6 +160,16 @@ export default function Canvas() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [ExcalidrawComp, setExcalidrawComp] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  // Tooltip state for source tracing
+  const [tooltip, setTooltip] = useState<{
+    visible: boolean;
+    x: number;
+    y: number;
+    sourceLocation?: SourceLocation;
+    apiRoute?: string;
+    flowDescription?: string;
+    label?: string;
+  }>({ visible: false, x: 0, y: 0 });
 
   useEffect(() => {
     let cancelled = false;
@@ -208,6 +229,62 @@ export default function Canvas() {
     }
   }, [drawings, annotations]);
 
+  // Handle pointer move for source tracing tooltip
+  // Uses scene coordinates from Excalidraw elements for hit testing
+  const handlePointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!apiRef.current) return;
+
+    const elements = apiRef.current.getSceneElements();
+    if (!elements || elements.length === 0) return;
+
+    // Get canvas bounding rect to convert viewport coords to scene coords
+    // Note: This is an approximation. Excalidraw doesn't expose public transform API.
+    const canvasRect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const sceneX = e.clientX - canvasRect.left;
+    const sceneY = e.clientY - canvasRect.top;
+
+    // Find AI element under pointer using scene coordinates
+    for (const el of elements) {
+      if (el.id.startsWith(AI_PREFIX)) {
+        const elX = el.x;
+        const elY = el.y;
+        const elW = el.width || 100;
+        const elH = el.height || 40;
+
+        if (sceneX >= elX && sceneX <= elX + elW &&
+            sceneY >= elY && sceneY <= elY + elH) {
+          // Found element under pointer
+          if (el.sourceLocation || el.apiRoute || el.flowDescription || el.text) {
+            // Clamp tooltip position to stay within viewport
+            const TOOLTIP_OFFSET = 10;
+            const TOOLTIP_WIDTH = 300;
+            const TOOLTIP_HEIGHT = 200;
+            const viewportWidth = window.innerWidth;
+            const viewportHeight = window.innerHeight;
+            const tooltipX = Math.min(e.clientX + TOOLTIP_OFFSET, viewportWidth - TOOLTIP_WIDTH);
+            const tooltipY = Math.min(e.clientY + TOOLTIP_OFFSET, viewportHeight - TOOLTIP_HEIGHT);
+            setTooltip({
+              visible: true,
+              x: tooltipX,
+              y: tooltipY,
+              sourceLocation: el.sourceLocation,
+              apiRoute: el.apiRoute,
+              flowDescription: el.flowDescription || (el.text ? `节点: ${el.text}` : undefined),
+              label: el.label || el.text,
+            });
+            return;
+          }
+        }
+      }
+    }
+    setTooltip((prev) => (prev.visible ? { ...prev, visible: false } : prev));
+  }, []);
+
+  // Hide tooltip on pointer leave
+  const handlePointerLeave = useCallback(() => {
+    setTooltip((prev) => (prev.visible ? { ...prev, visible: false } : prev));
+  }, []);
+
   if (error) {
     return (
       <div className="flex h-full items-center justify-center text-sm text-red-500">
@@ -232,13 +309,90 @@ export default function Canvas() {
   }
 
   return (
-    <div className="relative h-full w-full overflow-hidden">
+    <div
+      className="relative h-full w-full overflow-hidden"
+      onPointerLeave={handlePointerLeave}
+    >
       <div className="absolute inset-0 z-0">
         <ExcalidrawComp
           excalidrawAPI={onExcalidrawAPI}
           validateEmbeddable={validateEmbeddable}
           renderEmbeddable={renderEmbeddable}
+          onPointerMove={handlePointerMove}
         />
+      </div>
+      {/* Source tracing tooltip */}
+      {tooltip.visible && (
+        <div
+          className="fixed z-50 max-w-xs rounded-lg border border-gray-200 bg-white p-3 text-xs shadow-lg"
+          style={{ left: tooltip.x, top: tooltip.y }}
+        >
+          {tooltip.label && (
+            <div className="mb-2 font-semibold text-gray-800">{tooltip.label}</div>
+          )}
+          {tooltip.sourceLocation && (
+            <div className="space-y-1 text-gray-600">
+              <div className="flex items-center gap-1">
+                <span className="text-gray-400">📁</span>
+                <span className="font-mono">{tooltip.sourceLocation.file}</span>
+              </div>
+              {tooltip.sourceLocation.function && (
+                <div className="flex items-center gap-1">
+                  <span className="text-gray-400">ƒ</span>
+                  <span className="font-mono">{tooltip.sourceLocation.function}</span>
+                </div>
+              )}
+              {tooltip.sourceLocation.line && (
+                <div className="flex items-center gap-1">
+                  <span className="text-gray-400">#</span>
+                  <span className="font-mono">Line {tooltip.sourceLocation.line}</span>
+                </div>
+              )}
+              {tooltip.sourceLocation.event && (
+                <div className="flex items-center gap-1">
+                  <span className="text-gray-400">⚡</span>
+                  <span className="font-mono">{tooltip.sourceLocation.event} event</span>
+                </div>
+              )}
+            </div>
+          )}
+          {tooltip.apiRoute && (
+            <div className="mt-2 flex items-center gap-1 text-blue-600">
+              <span className="text-gray-400">→</span>
+              <span className="font-mono font-semibold">{tooltip.apiRoute}</span>
+            </div>
+          )}
+          {tooltip.flowDescription && (
+            <div className="mt-2 border-t border-gray-100 pt-2 text-gray-700">
+              {tooltip.flowDescription}
+            </div>
+          )}
+        </div>
+      )}
+      {/* Legend for source tracing */}
+      <div className="absolute bottom-3 left-3 z-10 rounded-lg border border-gray-200 bg-white/90 p-2 text-xs shadow-sm">
+        <div className="mb-1.5 font-medium text-gray-700">流程图图例</div>
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <div className="h-3 w-3 rounded" style={{ backgroundColor: "#4dabf7" }} />
+            <span className="text-gray-600">界面层 (UI)</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="h-3 w-3 rounded" style={{ backgroundColor: "#ffd43b" }} />
+            <span className="text-gray-600">API 层</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="h-3 w-3 rounded" style={{ backgroundColor: "#b197fc" }} />
+            <span className="text-gray-600">处理器 (Handler)</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="h-3 w-3 rounded" style={{ backgroundColor: "#63e6be" }} />
+            <span className="text-gray-600">数据层</span>
+          </div>
+        </div>
+        <div className="mt-2 border-t border-gray-100 pt-1.5 text-gray-500">
+          悬停查看源码位置
+        </div>
       </div>
     </div>
   );
