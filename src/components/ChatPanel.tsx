@@ -9,6 +9,10 @@ import CsvUpload from "./CsvUpload";
 import { generateId } from "@/lib/canvas-utils";
 import { useI18n } from "@/stores/i18n-store";
 import type { AIResponse, ChartData, Annotation, Drawing, ProjectAnalysis } from "@/types";
+import { validateAndFixAll, type OnProgress } from "@/lib/ai/layout-validator";
+import { useTaskStore, pipelineRunner } from "@/stores/task-engine";
+import { createChatTasks, assembleResponse } from "@/lib/ai/chat-pipeline";
+import TaskProgress from "./TaskProgress";
 
 const ECHART_PROTOCOL = "echart://";
 
@@ -72,7 +76,7 @@ function normalizeAnnotation(raw: Record<string, unknown>, index: number): Annot
   };
 }
 
-function normalizeResponse(data: Record<string, unknown>): AIResponse | null {
+async function normalizeResponse(data: Record<string, unknown>, onProgress?: OnProgress): Promise<AIResponse | null> {
   // Accept response if it has charts OR drawings
   if (!Array.isArray(data.charts) && !Array.isArray(data.drawings)) return null;
   const summary = typeof data.summary === "string" ? data.summary : useI18n.getState().t.generated;
@@ -84,7 +88,14 @@ function normalizeResponse(data: Record<string, unknown>): AIResponse | null {
   }));
   const rawAnns = Array.isArray(data.annotations) ? (data.annotations as Record<string, unknown>[]) : [];
   const annotations = rawAnns.map(normalizeAnnotation);
-  return { charts, drawings, annotations, summary };
+
+  // Auto-fix layout: validate → detect collisions → fix → recalc arrows
+  const fixedDrawings = await validateAndFixAll(drawings, onProgress);
+  const fixedAnnotations = (await validateAndFixAll(
+    annotations.map((a) => ({ id: a.id, elements: a.elements }))
+  )).map((fixed, i) => ({ ...annotations[i], elements: fixed.elements }));
+
+  return { charts, drawings: fixedDrawings, annotations: fixedAnnotations, summary };
 }
 
 /** Insert elements into Excalidraw and store data */
@@ -160,6 +171,7 @@ function applyDrawingsFromSSE(
 
 export default function ChatPanel({ onClose }: { onClose?: () => void }) {
   const [input, setInput] = useState("");
+  const [fixProgress, setFixProgress] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const { messages, isLoading, addMessage, setLoading } = useChatStore();
@@ -170,6 +182,10 @@ export default function ChatPanel({ onClose }: { onClose?: () => void }) {
   const projectStatus = useProjectStore((s) => s.status);
   const projectProgress = useProjectStore((s) => s.progress);
   const diagrams = useProjectStore((s) => s.diagrams);
+
+  // Subscribe to task engine
+  const taskPipelineStatus = useTaskStore((s) => s.status);
+  const taskResults = useTaskStore((s) => s.results);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -197,7 +213,9 @@ export default function ChatPanel({ onClose }: { onClose?: () => void }) {
         let finalSummary = "";
         let insights: string[] = [];
         let allDrawings: Array<{ id: string; elements: Array<Record<string, unknown>> }> = [];
-        let hasError = false;
+        let hasStepError = false;
+        let hasFatalError = false;
+        let receivedDone = false;
 
         try {
           const res = await fetch("/api/analyze", {
@@ -291,17 +309,18 @@ export default function ChatPanel({ onClose }: { onClose?: () => void }) {
                   case "done":
                     finalSummary = event.summary ?? "";
                     insights = event.insights ?? [];
+                    receivedDone = true;
                     projectStore.setDiagramsReady(finalSummary, insights);
                     break;
 
                   case "error":
-                    hasError = true;
                     if (event.step) {
+                      hasStepError = true;
                       projectStore.failStep(event.step, event.message);
                     } else {
+                      hasFatalError = true;
                       projectStore.setError(event.message);
                     }
-                    // Don't break - let the loop finish naturally
                     break;
                 }
               } catch {
@@ -310,13 +329,25 @@ export default function ChatPanel({ onClose }: { onClose?: () => void }) {
             }
           }
 
-          // Build final message - only if no error occurred
-          if (!hasError) {
+          // Build final message based on completion state
+          if (hasFatalError && allDrawings.length === 0) {
+            // Fatal error with no output — already shown via projectStore.setError
+          } else if (receivedDone || allDrawings.length > 0) {
+            // Completed (possibly partially)
             const insightsText = insights.length > 0 ? `\n\n**发现**:\n${insights.map((i) => `• ${i}`).join("\n")}` : "";
+            const warningText = hasStepError ? "\n\n⚠️ 部分分析步骤失败，结果可能不完整。" : "";
             addMessage({
               id: generateId(),
               role: "assistant",
-              content: `${finalSummary}${insightsText}\n\n已生成 ${allDrawings.length} 张分析图表到画布上。`,
+              content: `${finalSummary}${insightsText}\n\n已生成 ${allDrawings.length} 张分析图表到画布上。${warningText}`,
+              canvasDiff: null,
+            });
+          } else if (!receivedDone) {
+            // Stream ended without done event — silent interruption
+            addMessage({
+              id: generateId(),
+              role: "assistant",
+              content: `⚠️ 分析过程意外中断，未能生成完整结果。请重试。`,
               canvasDiff: null,
             });
           }
@@ -348,35 +379,43 @@ export default function ChatPanel({ onClose }: { onClose?: () => void }) {
           ? `[画布上下文] 当前画布有 ${Object.keys(chartOptions).length} 个图表：${chartSummary}。${annotations.length} 个批注。请基于此上下文处理我的下一条指令。`
           : "";
 
-        const context: Array<{ role: string; content: string }> = [];
+        const history: Array<{ role: string; content: string }> = [];
         for (const m of useChatStore.getState().messages) {
-          context.push({ role: m.role, content: m.content });
+          history.push({ role: m.role, content: m.content });
         }
-        if (canvasContext) context.push({ role: "user", content: canvasContext });
-        context.push({ role: "user", content: text.trim() });
 
-        const res = await fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ messages: context }),
-          signal: controller.signal,
+        // Create task pipeline
+        const chatTasks = createChatTasks({
+          userMessage: text.trim(),
+          history,
+          canvasContext,
         });
 
-        const data = await res.json();
+        // Run pipeline with task engine (handles retries, pause, user intervention)
+        await pipelineRunner.run(`chat-${Date.now()}`, chatTasks);
 
-        if (!res.ok) {
-          addMessage({ id: generateId(), role: "assistant", content: `⚠️ ${data.error ?? `${t.serviceError} (${res.status})`}`, canvasDiff: null });
-          return;
+        // Assemble result from completed tasks
+        const pipelineResults = useTaskStore.getState().results;
+        const pipelineStatus = useTaskStore.getState().status;
+
+        if (pipelineStatus === "done") {
+          const normalized = assembleResponse(pipelineResults);
+          if (normalized) {
+            applyToCanvas(normalized);
+            addMessage({ id: generateId(), role: "assistant", content: normalized.summary, canvasDiff: normalized });
+          } else {
+            addMessage({ id: generateId(), role: "assistant", content: `⚠️ ${t.parseError}`, canvasDiff: null });
+          }
+        } else if (pipelineStatus === "failed") {
+          const failedTask = useTaskStore.getState().tasks.find((t) => t.status === "failed");
+          addMessage({
+            id: generateId(),
+            role: "assistant",
+            content: `⚠️ 任务「${failedTask?.name ?? "未知"}」失败：${failedTask?.error ?? "未知错误"}`,
+            canvasDiff: null,
+          });
         }
-
-        const normalized = normalizeResponse(data);
-        if (!normalized) {
-          addMessage({ id: generateId(), role: "assistant", content: `⚠️ ${t.parseError}`, canvasDiff: null });
-          return;
-        }
-
-        applyToCanvas(normalized);
-        addMessage({ id: generateId(), role: "assistant", content: normalized.summary, canvasDiff: normalized });
+        // If paused/waiting_user, don't add message yet — user will resume
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") return;
         const isNetwork = err instanceof TypeError && err.message.includes("fetch");
@@ -387,6 +426,7 @@ export default function ChatPanel({ onClose }: { onClose?: () => void }) {
           canvasDiff: null,
         });
       } finally {
+        setFixProgress("");
         setLoading(false);
       }
     },
@@ -460,15 +500,20 @@ export default function ChatPanel({ onClose }: { onClose?: () => void }) {
         ))}
         {isLoading && (
           <div className="flex flex-col gap-2 justify-start mb-3">
-            {/* Progress message */}
-            <div className="flex items-center gap-2 rounded-2xl bg-gray-50 px-4 py-2.5 text-sm text-gray-500 dark:bg-gray-800">
-              <span className="flex gap-1">
-                <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-bounce [animation-delay:0ms]" />
-                <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-bounce [animation-delay:150ms]" />
-                <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-bounce [animation-delay:300ms]" />
-              </span>
-              {projectProgress || t.generating}
-            </div>
+            {/* Task pipeline progress */}
+            <TaskProgress />
+
+            {/* Fallback progress message (for GitHub analysis or when no tasks) */}
+            {useTaskStore.getState().tasks.length === 0 && (
+              <div className="flex items-center gap-2 rounded-2xl bg-gray-50 px-4 py-2.5 text-sm text-gray-500 dark:bg-gray-800">
+                <span className="flex gap-1">
+                  <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-bounce [animation-delay:0ms]" />
+                  <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-bounce [animation-delay:150ms]" />
+                  <span className="h-1.5 w-1.5 rounded-full bg-blue-500 animate-bounce [animation-delay:300ms]" />
+                </span>
+                {fixProgress || projectProgress || t.generating}
+              </div>
+            )}
 
             {/* Diagram progress */}
             {diagrams.length > 0 && (
@@ -501,6 +546,8 @@ export default function ChatPanel({ onClose }: { onClose?: () => void }) {
             )}
           </div>
         )}
+        {/* Show task progress when waiting for user decision (pipeline paused) */}
+        {!isLoading && taskPipelineStatus === "waiting_user" && <TaskProgress />}
         <div ref={messagesEndRef} />
       </div>
 

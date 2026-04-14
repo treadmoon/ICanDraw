@@ -66,6 +66,7 @@ export async function POST(req: Request) {
           ...safeMessages,
         ],
       }),
+      signal: AbortSignal.timeout(120_000), // 120s timeout — prevent infinite hang
     });
 
     if (!res.ok) {
@@ -78,22 +79,48 @@ export async function POST(req: Request) {
 
     const data = await res.json();
     const content: string = data.choices?.[0]?.message?.content ?? "";
+    const finishReason: string = data.choices?.[0]?.finish_reason ?? "";
 
     // Extract JSON (handle possible markdown fences)
     let raw = content.trim();
     const fenceMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
     if (fenceMatch) raw = fenceMatch[1].trim();
 
-    const parsed = JSON.parse(raw);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      // AI output was likely truncated — try to salvage partial JSON
+      // Attempt: close all open braces/brackets
+      let patched = raw;
+      const opens = (patched.match(/[{[]/g) || []).length;
+      const closes = (patched.match(/[}\]]/g) || []).length;
+      for (let i = 0; i < opens - closes; i++) {
+        // Guess: if last open was '{' close with '}', else ']'
+        const lastOpen = patched.lastIndexOf("{") > patched.lastIndexOf("[") ? "}" : "]";
+        patched += lastOpen;
+      }
+      try {
+        parsed = JSON.parse(patched);
+      } catch {
+        const hint = finishReason === "length"
+          ? "AI 输出超过长度限制，请尝试简化请求（如减少节点数量）"
+          : "AI 返回了无法解析的数据，请重试";
+        return Response.json({ error: hint }, { status: 500 });
+      }
+    }
+
     return Response.json(parsed);
   } catch (err) {
     const message = err instanceof Error ? err.message : "未知错误";
     console.error("[API Error]", message);
-    // Don't leak internal error details to client
+    const isTimeout = err instanceof DOMException && err.name === "TimeoutError";
     const isJsonError = message.includes("JSON");
-    return Response.json(
-      { error: isJsonError ? "AI 返回了无法解析的数据，请重试" : "AI 服务异常，请稍后重试" },
-      { status: 500 }
-    );
+    const error = isTimeout
+      ? "AI 响应超时，请尝试简化请求或稍后重试"
+      : isJsonError
+        ? "AI 返回了无法解析的数据，请重试"
+        : "AI 服务异常，请稍后重试";
+    return Response.json({ error }, { status: isTimeout ? 504 : 500 });
   }
 }

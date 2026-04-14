@@ -524,10 +524,19 @@ export async function runSynthesizerAgent(
   }
 
   // Convert diagrams to Excalidraw format
-  const drawings = diagrams.map((spec, i) => ({
+  const rawDrawings = diagrams.map((spec, i) => ({
     id: `diagram-${i}`,
     type: spec.type,
     elements: convertToExcalidrawElements(spec, (i % 2) * 800, Math.floor(i / 2) * 500),
+  }));
+
+  // Auto-fix layout: validate → detect collisions → fix → recalc arrows
+  const { validateAndFixAll } = await import("@/lib/ai/layout-validator");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const fixedDrawings = await validateAndFixAll(rawDrawings as any);
+  const drawings = rawDrawings.map((d, i) => ({
+    ...d,
+    elements: fixedDrawings[i].elements as unknown as Record<string, unknown>[],
   }));
 
   return {
